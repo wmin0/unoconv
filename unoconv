@@ -548,6 +548,11 @@ class Options:
         self.paperorientation = None
         self.papersize = None
 
+        self.splitspreadsheet = False
+        self.splitspreadsheetqueue = None
+        self.spreadsheetidx = None
+        self.spreadsheetfitpage = None
+
         ### Get options from the commandline
         try:
             opts, args = getopt.getopt (args, 'c:Dd:e:F:f:hi:LlM:no:p:s:T:t:P:vV',
@@ -555,7 +560,8 @@ class Options:
                  'help', 'import=', 'listener', 'meta=', 'no-launch', 'output=',
                  'outputpath', 'password=', 'pipe=', 'port=', 'preserve',
                  'server=', 'timeout=', 'show', 'stdin', 'stdout', 'template', 'printer=',
-                 'verbose', 'version'] )
+                 'verbose', 'version',
+                 'spreadsheet-split', 'spreadsheet-idx=', 'spreadsheet-fitpage='] )
         except getopt.error as exc:
             print('unoconv: %s, try unoconv -h for a list of all the options' % str(exc))
             sys.exit(255)
@@ -662,6 +668,13 @@ class Options:
                     if (2 == len(size)):
                         self.papersize = size
                         self.setprinter = True
+            elif opt in ['--spreadsheet-split']:
+                self.splitspreadsheet = True
+            elif opt in ['--spreadsheet-fitpage']:
+                if arg in ['x', 'y', 'all']:
+                    self.spreadsheetfitpage = arg
+            elif opt in ['--spreadsheet-idx']:
+                self.spreadsheetidx = int(arg)
 
         ### Enable verbosity
         if self.verbose >= 2:
@@ -763,6 +776,10 @@ unoconv options:
                                           eg. -P PaperOrientation=landscape
                                         PapserSize: specify printer paper size, paper format should set to USER, size=widthxheight
                                           eg. -P PaperSize=130x200 means width=130, height=200
+      --spreadsheet-split             split worksheets in spreadsheet
+      --spreadsheet-idx=idx           specify spreadsheet idx
+      --spreadsheet-fitpage=type      worksheet fit page (x, y, all)
+                                        eg. --spreadsheet-fitpage=all
 ''', file=sys.stderr)
 
 class Convertor:
@@ -943,6 +960,29 @@ class Convertor:
             if not document:
                 raise UnoException("The document '%s' could not be opened." % inputurl, None)
 
+            ### SpreadSheet options
+            if 'com.sun.star.sheet.SpreadsheetDocument' in document.getSupportedServiceNames():
+                sheets = document.getSheets()
+
+                if op.spreadsheetidx != None:
+                    document = self.split_spreadsheet(document, op.spreadsheetidx)
+                    self.set_pagestyle(document, 'FooterIsOn', False)
+
+                elif op.splitspreadsheet:
+                    if None == op.splitspreadsheetqueue:
+                        op.splitspreadsheetqueue = [i for i in range(0, sheets.getCount())]
+
+                    document = self.split_spreadsheet(document, op.splitspreadsheetqueue[0])
+                    self.set_pagestyle(document, 'FooterIsOn', False)
+
+                if op.spreadsheetfitpage != None:
+                    if op.spreadsheetfitpage == 'x':
+                        self.set_pagestyle(document, 'ScaleToPagesX', 1)
+                    elif op.spreadsheetfitpage == 'y':
+                        self.set_pagestyle(document, 'ScaleToPagesY', 1)
+                    elif op.spreadsheetfitpage == 'all':
+                        self.set_pagestyle(document, 'ScaleToPages', 1)
+
             ### Import style template
             phase = "import-style"
             if op.template:
@@ -1091,6 +1131,8 @@ class Convertor:
                     outputfn = realpath(inbase + os.extsep + outputfmt.extension)
 
                 outputurl = unohelper.absolutize( self.cwd, unohelper.systemPathToFileUrl(outputfn) )
+                if op.splitspreadsheet and op.splitspreadsheetqueue != None:
+                    outputurl = outputurl.replace('.', '_' + str(op.splitspreadsheetqueue[0]) + '.')
 
             info(1, "Output file: %s" % outputurl)
 
@@ -1144,6 +1186,23 @@ class Convertor:
                 exitcode = 2
                 pass
 
+    def split_spreadsheet(self, document, idx):
+        sheets = document.getSheets()
+        sheet = sheets.getByIndex(idx)
+        document2 = self.desktop.loadComponentFromURL("private:factory/scalc", "_blank", 0, ())
+        sheets2 = document2.getSheets()
+        sheets2.importSheet(document, sheet.getName(), 0)
+        document.dispose()
+        document.close(True)
+        return document2
+
+    def set_pagestyle(self, document, key, value):
+        style = document.getStyleFamilies()
+        pageStyles = style.getByName('PageStyles')
+        for name in pageStyles.getElementNames():
+            pageStyle = pageStyles.getByName(name)
+            pageStyle.setPropertyValue(key, value)
+
 class Listener:
     def __init__(self):
         global product
@@ -1191,31 +1250,11 @@ class Listener:
         except Exception as e:
             error("Launch of %s failed.\n%s" % (office.binary, e))
 
-def error(msg):
-    "Output error message"
-    print(msg, file=sys.stderr)
-
-def info(level, msg):
-    "Output info message"
-    if 'op' not in globals():
-        pass
-    elif op.verbose >= 3 and level >= 3:
-        print("DEBUG:", msg, file=sys.stderr)
-    elif not op.stdout and level <= op.verbose:
-        print(msg, file=sys.stdout)
-    elif level <= op.verbose:
-        print(msg, file=sys.stderr)
-
-def die(ret, msg=None):
-    "Print optional error and exit with errorcode"
-    global convertor, ooproc, office
-
-    if msg:
-        error('Error: %s' % msg)
-
+def clean_convertor():
+    "clean convertor"
+    global convertor, ooproc
     ### Did we start our own listener instance ?
     if not op.listener and ooproc and convertor:
-
         ### If there is a GUI now attached to the instance, disable listener
         if convertor.desktop.getCurrentFrame():
             info(2, 'Trying to stop %s GUI listener.' % product.ooName)
@@ -1259,6 +1298,29 @@ def die(ret, msg=None):
     # allow Python GC to garbage collect pyuno object *before* exit call
     # which avoids random segmentation faults --vpa
     convertor = None
+    ooproc = None
+
+def error(msg):
+    "Output error message"
+    print(msg, file=sys.stderr)
+
+def info(level, msg):
+    "Output info message"
+    if 'op' not in globals():
+        pass
+    elif op.verbose >= 3 and level >= 3:
+        print("DEBUG:", msg, file=sys.stderr)
+    elif not op.stdout and level <= op.verbose:
+        print(msg, file=sys.stdout)
+    elif level <= op.verbose:
+        print(msg, file=sys.stderr)
+
+def die(ret, msg=None):
+    "Print optional error and exit with errorcode"
+    if msg:
+        error('Error: %s' % msg)
+
+    clean_convertor()
 
     sys.exit(ret)
 
@@ -1280,9 +1342,18 @@ def main():
             convertor = Convertor()
             convertor.convert(inputfn)
         elif op.filenames:
-            convertor = Convertor()
             for inputfn in op.filenames:
+                convertor = Convertor()
                 convertor.convert(inputfn)
+                clean_convertor()
+                while None != op.splitspreadsheetqueue:
+                    op.splitspreadsheetqueue = op.splitspreadsheetqueue[1:]
+                    if (len(op.splitspreadsheetqueue) == 0):
+                        op.splitspreadsheetqueue = None
+                        break
+                    convertor = Convertor()
+                    convertor.convert(inputfn)
+                    clean_convertor()
 
     except NoConnectException as e:
         error("unoconv: could not find an existing connection to LibreOffice at %s:%s." % (op.server, op.port))
