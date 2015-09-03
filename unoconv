@@ -533,6 +533,8 @@ class Options:
         self.timeout = 6
         self.verbose = 0
 
+        self.autoreset = False
+
         self.paperformat = "A4"
         self.paperorientation = "PORTRAIT"
         self.papersize = ""
@@ -549,7 +551,9 @@ class Options:
                  'help', 'import=', 'listener', 'meta=', 'no-launch', 'output=',
                  'outputpath', 'password=', 'pipe=', 'port=', 'preserve',
                  'server=', 'timeout=', 'show', 'stdin', 'stdout', 'template',
-                 'verbose', 'version', 'paper-format=', 'paper-orientation=', 'paper-size=',
+                 'verbose', 'version',
+                 'autoreset',
+                 'paper-format=', 'paper-orientation=', 'paper-size=',
                  'spreadsheet-split', 'spreadsheet-idx=', 'spreadsheet-fitpage'] )
         except getopt.error as exc:
             print('unoconv: %s, try unoconv -h for a list of all the options' % str(exc))
@@ -643,6 +647,8 @@ class Options:
             elif opt in ['-V', '--version']:
                 self.version()
                 sys.exit(0)
+            elif opt in ['--autoreset']:
+                self.autoreset = True
             elif opt in ['--paper-format']:
                 self.paperformat = arg
             elif opt in ['--paper-orientation']:
@@ -751,6 +757,7 @@ unoconv options:
   -T, --timeout=secs                  timeout after secs if connection to listener fails
   -v, --verbose                       be more and more verbose (-vvv for debugging)
       --version                       display version number of unoconv, OOo/LO and platform details
+      --autoreset                     reset libreoffice for each file
       --paper-orientation=orientation specify printer paper orientation
                                         eg. --paper-orientation=LANDSCAPE
       --paper-format=format           specify printer paper format
@@ -1308,18 +1315,29 @@ def main():
             convertor = Convertor()
             convertor.convert(inputfn)
         elif op.filenames:
-            for inputfn in op.filenames:
-                convertor = Convertor()
-                convertor.convert(inputfn)
-                clean_convertor()
-                while None != op.splitspreadsheetqueue:
-                    op.splitspreadsheetqueue = op.splitspreadsheetqueue[1:]
-                    if (len(op.splitspreadsheetqueue) == 0):
-                        op.splitspreadsheetqueue = None
-                        break
+            if op.autoreset:
+                for inputfn in op.filenames:
                     convertor = Convertor()
                     convertor.convert(inputfn)
                     clean_convertor()
+                    while None != op.splitspreadsheetqueue:
+                        op.splitspreadsheetqueue = op.splitspreadsheetqueue[1:]
+                        if (len(op.splitspreadsheetqueue) == 0):
+                            op.splitspreadsheetqueue = None
+                            break
+                        convertor = Convertor()
+                        convertor.convert(inputfn)
+                        clean_convertor()
+            else:
+                convertor = Convertor()
+                for inputfn in op.filenames:
+                    convertor.convert(inputfn)
+                    while None != op.splitspreadsheetqueue:
+                        op.splitspreadsheetqueue = op.splitspreadsheetqueue[1:]
+                        if (len(op.splitspreadsheetqueue) == 0):
+                            op.splitspreadsheetqueue = None
+                            break
+                        convertor.convert(inputfn)
 
     except NoConnectException as e:
         error("unoconv: could not find an existing connection to LibreOffice at %s:%s." % (op.server, op.port))
