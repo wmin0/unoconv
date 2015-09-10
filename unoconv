@@ -22,6 +22,8 @@ import glob
 import os
 import subprocess
 import sys
+import re
+import math
 import time
 import signal
 
@@ -972,12 +974,17 @@ class Convertor:
                     self.set_pagestyle(document, 'FooterIsOn', False)
 
                 if op.spreadsheetfitpage != None:
-                    if op.spreadsheetfitpage == 'x':
-                        self.set_pagestyle(document, 'ScaleToPagesX', 1)
-                    elif op.spreadsheetfitpage == 'y':
-                        self.set_pagestyle(document, 'ScaleToPagesY', 1)
-                    elif op.spreadsheetfitpage == 'all':
-                        self.set_pagestyle(document, 'ScaleToPages', 1)
+                    for name in sheets.getElementNames():
+                        sheet = sheets.getByName(name)
+                        if op.spreadsheetfitpage == 'all':
+                            self.set_pagestyle(document, 'ScaleToPages', 1, sheet.getPropertyValue('PageStyle'))
+                            continue
+                        if op.spreadsheetfitpage == 'x':
+                            width, _ = self.get_sheet_content_box(sheet, 'x')
+                            self.set_pagestyle(document, 'ScaleToPagesX', int(math.ceil(width / 50000)), sheet.getPropertyValue('PageStyle'))
+                        elif op.spreadsheetfitpage == 'y':
+                            _, height = self.get_sheet_content_box(sheet, 'y')
+                            self.set_pagestyle(document, 'ScaleToPagesY', int(math.ceil(height / 100000)), sheet.getPropertyValue('PageStyle'))
 
             ### Import style template
             phase = "import-style"
@@ -1192,12 +1199,82 @@ class Convertor:
         document.close(True)
         return document2
 
-    def set_pagestyle(self, document, key, value):
+    def set_pagestyle(self, document, key, value, name = None):
         style = document.getStyleFamilies()
         pageStyles = style.getByName('PageStyles')
-        for name in pageStyles.getElementNames():
+        if name == None:
+            for name in pageStyles.getElementNames():
+                pageStyle = pageStyles.getByName(name)
+                pageStyle.setPropertyValue(key, value)
+        else:
             pageStyle = pageStyles.getByName(name)
             pageStyle.setPropertyValue(key, value)
+
+    def col_conv_int(self, col):
+        ret = 0
+        for s in col:
+            ret = ret * 26 + ord(s) - ord('A') + 1
+        return ret
+
+    def int_conv_col(self, i):
+        ret = ''
+        while i > 26:
+            if i % 26 == 0:
+                ret = chr(26 + ord('A') - 1) + ret
+                i = i / 26 - 1
+            else:
+                ret = chr((i % 26) + ord('A') - 1) + ret
+                i = int(i / 26)
+        ret = chr(i + ord('A') - 1) + ret
+        return ret
+
+    def get_sheet_content_box(self, sheet, attr = None):
+        startPos = [1, 1]
+        endPos = [1, 1]
+        regex = re.compile('([A-Z]+)(\d+)')
+        content = sheet.queryContentCells(1024 - 1)
+        for name in content.getElementNames():
+            cellRange = name.split('.')[-1].split(':')
+            if len(cellRange) == 1:
+                col, row = regex.match(cellRange[0]).groups()
+                col = self.col_conv_int(col)
+                row = int(row)
+                if col > endPos[0]:
+                    endPos[0] = col
+                if row > endPos[1]:
+                    endPos[1] = row
+            else:
+                col, row = regex.match(cellRange[0]).groups()
+                col = self.col_conv_int(col)
+                row = int(row)
+                if startPos[0] > col:
+                    startPos[0] = col
+                if startPos[1] > row:
+                    startPos[1] = row
+                col, row = regex.match(cellRange[1]).groups()
+                col = self.col_conv_int(col)
+                row = int(row)
+                if col > endPos[0]:
+                    endPos[0] = col
+                if row > endPos[1]:
+                    endPos[1] = row
+        width = 0
+        height = 0
+        if attr != 'y':
+            columns = sheet.getColumns()
+            for i in range(startPos[0], endPos[0] + 1):
+                col = columns.getByIndex(i - 1)
+                if not col.getPropertyValue('IsVisible'):
+                    continue
+                width += col.getPropertyValue('Width')
+        if attr != 'x':
+            rows = sheet.getRows()
+            for i in range(startPos[1], endPos[1] + 1):
+                row = rows.getByIndex(i - 1)
+                if not row.getPropertyValue('IsVisible'):
+                    continue
+                height += row.getPropertyValue('Height')
+        return (width, height)
 
 class Listener:
     def __init__(self):
